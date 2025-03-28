@@ -1,4 +1,4 @@
-;; StacksOrbit Core Contract - Added Operator Management
+;; StacksOrbit Core Contract - Added State Root Management
 ;; This contract manages the main functionality of the StacksOrbit L3 rollup
 
 ;; Error Codes
@@ -6,6 +6,9 @@
 (define-constant ERR-INVALID-STATE (err u1001))
 (define-constant ERR-ALREADY-INITIALIZED (err u1002))
 (define-constant ERR-NOT-INITIALIZED (err u1003))
+(define-constant ERR-INVALID-BATCH-SIZE (err u1004))
+(define-constant ERR-INVALID-ROOT (err u1005))
+(define-constant ERR-BATCH-NOT-FOUND (err u1006))
 (define-constant ERR-SYSTEM-PAUSED (err u1010))
 
 ;; Data Variables
@@ -14,10 +17,21 @@
 (define-data-var system-paused bool false)
 (define-data-var min-bond uint u1000000000) ;; 1000 STX in microSTX
 (define-data-var operators-count uint u0)
+(define-data-var last-batch-id uint u0)
 
 ;; Data Maps
 (define-map operators principal bool)
 (define-map operator-bonds principal uint)
+(define-map state-roots 
+  { batch-id: uint }
+  { 
+    state-root: (buff 32),
+    timestamp: uint,
+    submitter: principal,
+    tx-count: uint,
+    is-finalized: bool
+  }
+)
 
 ;; Private Functions
 (define-private (is-contract-owner)
@@ -108,13 +122,44 @@
   )
 )
 
+;; State Root Management
+(define-public (submit-state-root (state-root (buff 32)) (tx-count uint))
+  (let
+    (
+      (batch-id (+ (var-get last-batch-id) u1))
+      (block-height block-height)
+    )
+    (asserts! (check-system-active) ERR-SYSTEM-PAUSED)
+    (asserts! (is-operator) ERR-NOT-AUTHORIZED)
+    (asserts! (> tx-count u0) ERR-INVALID-BATCH-SIZE)
+
+    ;; Store the new state root
+    (map-set state-roots
+      { batch-id: batch-id }
+      {
+        state-root: state-root,
+        timestamp: block-height,
+        submitter: tx-sender,
+        tx-count: tx-count,
+        is-finalized: false
+      }
+    )
+
+    ;; Update last batch ID
+    (var-set last-batch-id batch-id)
+
+    (ok batch-id)
+  )
+)
+
 ;; Read-only Functions
 (define-read-only (get-system-status)
   {
     initialized: (var-get system-initialized),
     paused: (var-get system-paused),
     min-bond: (var-get min-bond),
-    operators-count: (var-get operators-count)
+    operators-count: (var-get operators-count),
+    last-batch-id: (var-get last-batch-id)
   }
 )
 
@@ -123,6 +168,10 @@
     is-operator: (default-to false (map-get? operators operator)),
     bond-amount: (default-to u0 (map-get? operator-bonds operator))
   }
+)
+
+(define-read-only (get-state-root (batch-id uint))
+  (map-get? state-roots { batch-id: batch-id })
 )
 
 ;; Initialize contract with the contract owner
